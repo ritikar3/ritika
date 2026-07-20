@@ -1,1 +1,167 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SafeHer Cloud Infrastructure Stack
 
+Resources:
+
+  # -------------------------
+  # VPC
+  # -------------------------
+  SafeHerVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: SafeHer-VPC
+
+  # -------------------------
+  # Public Subnet
+  # -------------------------
+  SafeHerPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SafeHerVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ''
+      Tags:
+        - Key: Name
+          Value: SafeHer-PublicSubnet
+
+  # -------------------------
+  # Internet Gateway
+  # -------------------------
+  SafeHerInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: SafeHer-IGW
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref SafeHerVPC
+      InternetGatewayId: !Ref SafeHerInternetGateway
+
+  # -------------------------
+  # Route Table
+  # -------------------------
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SafeHerVPC
+      Tags:
+        - Key: Name
+          Value: SafeHer-PublicRouteTable
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref SafeHerInternetGateway
+
+  PublicSubnetAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SafeHerPublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # -------------------------
+  # Security Group
+  # -------------------------
+  SafeHerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP and SSH access
+      VpcId: !Ref SafeHerVPC
+
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+      Tags:
+        - Key: Name
+          Value: SafeHer-SG
+
+  # -------------------------
+  # EC2 Instance
+  # -------------------------
+  SafeHerWebServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.small
+      ImageId: ami-0a5c3558529277641
+      KeyName: vockey
+      SubnetId: !Ref SafeHerPublicSubnet
+
+      SecurityGroupIds:
+        - !Ref SafeHerSecurityGroup
+
+      Tags:
+        - Key: Name
+          Value: SafeHer-WebServer
+
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          yum update -y
+          yum install -y httpd php
+
+          systemctl enable httpd
+          systemctl start httpd
+
+          cat <<EOF > /var/www/html/index.html
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>SafeHer</title>
+          </head>
+          <body>
+              <h1>SafeHer</h1>
+              <h2>Cloud-Based Women Safety and Emergency Response System</h2>
+
+              <p>Application successfully deployed using AWS CloudFormation.</p>
+
+              <hr>
+
+              <h3>Features</h3>
+
+              <ul>
+                  <li>SOS Emergency Alerts</li>
+                  <li>Live GPS Tracking</li>
+                  <li>Emergency Contacts</li>
+                  <li>Incident Reporting</li>
+                  <li>Cloud-Based Infrastructure</li>
+              </ul>
+
+          </body>
+          </html>
+          EOF
+
+Outputs:
+
+  InstancePublicIP:
+    Description: Public IP of SafeHer Web Server
+    Value: !GetAtt SafeHerWebServer.PublicIp
+
+  VPCID:
+    Description: VPC ID
+    Value: !Ref SafeHerVPC
+
+  PublicSubnetID:
+    Description: Public Subnet ID
+    Value: !Ref SafeHerPublicSubnet
