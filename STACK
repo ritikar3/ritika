@@ -1,167 +1,421 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: SafeHer Cloud Infrastructure Stack
+
+Description: SafeHer Women Safety Emergency Response Serverless Platform
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: SafeHer
 
 Resources:
 
-  # -------------------------
-  # VPC
-  # -------------------------
-  SafeHerVPC:
-    Type: AWS::EC2::VPC
+  # Cognito Authentication
+  SafeHerUserPool:
+    Type: AWS::Cognito::UserPool
     Properties:
-      CidrBlock: 10.0.0.0/16
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
-      Tags:
-        - Key: Name
-          Value: SafeHer-VPC
+      UserPoolName: SafeHer-Users
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
 
-  # -------------------------
-  # Public Subnet
-  # -------------------------
-  SafeHerPublicSubnet:
-    Type: AWS::EC2::Subnet
+  SafeHerUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
     Properties:
-      VpcId: !Ref SafeHerVPC
-      CidrBlock: 10.0.1.0/24
-      MapPublicIpOnLaunch: true
-      AvailabilityZone: !Select
-        - 0
-        - !GetAZs ''
-      Tags:
-        - Key: Name
-          Value: SafeHer-PublicSubnet
+      ClientName: SafeHer-App-Client
+      UserPoolId: !Ref SafeHerUserPool
+      GenerateSecret: false
 
-  # -------------------------
-  # Internet Gateway
-  # -------------------------
-  SafeHerInternetGateway:
-    Type: AWS::EC2::InternetGateway
+  # DynamoDB Tables
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
     Properties:
-      Tags:
-        - Key: Name
-          Value: SafeHer-IGW
+      TableName: SafeHerUsers
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: UserID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: UserID
+          KeyType: HASH
 
-  AttachGateway:
-    Type: AWS::EC2::VPCGatewayAttachment
+  SOSAlertsTable:
+    Type: AWS::DynamoDB::Table
     Properties:
-      VpcId: !Ref SafeHerVPC
-      InternetGatewayId: !Ref SafeHerInternetGateway
+      TableName: SafeHerSOSAlerts
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: AlertID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: AlertID
+          KeyType: HASH
 
-  # -------------------------
-  # Route Table
-  # -------------------------
-  PublicRouteTable:
-    Type: AWS::EC2::RouteTable
+  GPSTable:
+    Type: AWS::DynamoDB::Table
     Properties:
-      VpcId: !Ref SafeHerVPC
-      Tags:
-        - Key: Name
-          Value: SafeHer-PublicRouteTable
+      TableName: SafeHerGPS
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: UserID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: UserID
+          KeyType: HASH
 
-  PublicRoute:
-    Type: AWS::EC2::Route
-    DependsOn: AttachGateway
+  IncidentTable:
+    Type: AWS::DynamoDB::Table
     Properties:
-      RouteTableId: !Ref PublicRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref SafeHerInternetGateway
+      TableName: SafeHerIncidents
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: IncidentID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: IncidentID
+          KeyType: HASH
 
-  PublicSubnetAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
+  # S3 Evidence Storage
+
+  SafeHerEvidenceBucket:
+    Type: AWS::S3::Bucket
     Properties:
-      SubnetId: !Ref SafeHerPublicSubnet
-      RouteTableId: !Ref PublicRouteTable
+      BucketName: !Sub safeher-evidence-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
 
-  # -------------------------
-  # Security Group
-  # -------------------------
-  SafeHerSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
+  # SNS Emergency Alerts
+
+  SafeHerEmergencyTopic:
+    Type: AWS::SNS::Topic
     Properties:
-      GroupDescription: Allow HTTP and SSH access
-      VpcId: !Ref SafeHerVPC
+      TopicName: SafeHer-Emergency-Alerts
 
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: 0.0.0.0/0
+  # Lambda IAM Role
 
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-
-      Tags:
-        - Key: Name
-          Value: SafeHer-SG
-
-  # -------------------------
-  # EC2 Instance
-  # -------------------------
-  SafeHerWebServer:
-    Type: AWS::EC2::Instance
+  SafeHerLambdaRole:
+    Type: AWS::IAM::Role
     Properties:
-      InstanceType: t3.small
-      ImageId: ami-0a5c3558529277641
-      KeyName: vockey
-      SubnetId: !Ref SafeHerPublicSubnet
+      RoleName: SafeHer-Lambda-Role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
 
-      SecurityGroupIds:
-        - !Ref SafeHerSecurityGroup
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
-      Tags:
-        - Key: Name
-          Value: SafeHer-WebServer
+      Policies:
+        - PolicyName: SafeHerBackendAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:*
+                  - s3:*
+                  - sns:Publish
+                Resource: "*"
+# Lambda Functions
 
-      UserData:
-        Fn::Base64: |
-          #!/bin/bash
-          yum update -y
-          yum install -y httpd php
+  SafeHerSOSLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SafeHer-SOS-Processor
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt SafeHerLambdaRole.Arn
+      Timeout: 15
+      Environment:
+        Variables:
+          SOS_TABLE: !Ref SOSAlertsTable
+          SNS_TOPIC: !Ref SafeHerEmergencyTopic
+      Code:
+        ZipFile: |
+          import json,boto3,uuid,os
 
-          systemctl enable httpd
-          systemctl start httpd
+          dynamodb=boto3.resource('dynamodb')
+          sns=boto3.client('sns')
+          table=dynamodb.Table(os.environ['SOS_TABLE'])
 
-          cat <<EOF > /var/www/html/index.html
-          <!DOCTYPE html>
-          <html>
-          <head>
-              <title>SafeHer</title>
-          </head>
-          <body>
-              <h1>SafeHer</h1>
-              <h2>Cloud-Based Women Safety and Emergency Response System</h2>
+          def lambda_handler(event,context):
+              alert_id=str(uuid.uuid4())
 
-              <p>Application successfully deployed using AWS CloudFormation.</p>
+              table.put_item(
+                  Item={
+                    "AlertID":alert_id,
+                    "Status":"ACTIVE"
+                  }
+              )
 
-              <hr>
+              sns.publish(
+                  TopicArn=os.environ['SNS_TOPIC'],
+                  Message="SafeHer Emergency SOS Triggered"
+              )
 
-              <h3>Features</h3>
+              return {
+                "statusCode":200,
+                "body":json.dumps({
+                  "message":"SOS Alert Sent",
+                  "AlertID":alert_id
+                })
+              }
 
-              <ul>
-                  <li>SOS Emergency Alerts</li>
-                  <li>Live GPS Tracking</li>
-                  <li>Emergency Contacts</li>
-                  <li>Incident Reporting</li>
-                  <li>Cloud-Based Infrastructure</li>
-              </ul>
 
-          </body>
-          </html>
-          EOF
+  SafeHerGPSLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SafeHer-GPS-Tracker
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt SafeHerLambdaRole.Arn
+      Environment:
+        Variables:
+          GPS_TABLE: !Ref GPSTable
+      Code:
+        ZipFile: |
+          import boto3,os
+
+          table=boto3.resource('dynamodb').Table(
+              os.environ['GPS_TABLE']
+          )
+
+          def lambda_handler(event,context):
+              table.put_item(
+                Item={
+                  "UserID":event["userId"],
+                  "Latitude":event["latitude"],
+                  "Longitude":event["longitude"]
+                }
+              )
+
+              return {
+                "statusCode":200,
+                "body":"Location Saved"
+              }
+
+
+  SafeHerEvidenceLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SafeHer-Evidence-Upload
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt SafeHerLambdaRole.Arn
+      Environment:
+        Variables:
+          BUCKET: !Ref SafeHerEvidenceBucket
+      Code:
+        ZipFile: |
+          import json
+
+          def lambda_handler(event,context):
+              return {
+                "statusCode":200,
+                "body":json.dumps({
+                  "message":"Evidence Upload Ready"
+                })
+              }
+
+
+# API Gateway
+
+  SafeHerAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: SafeHer-Emergency-API
+
+
+  SafeHerAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: SafeHer-Cognito-Authorizer
+      Type: COGNITO_USER_POOLS
+      RestApiId: !Ref SafeHerAPI
+      IdentitySource: method.request.header.Authorization
+      ProviderARNs:
+        - !GetAtt SafeHerUserPool.Arn
+
+
+# API Resources
+
+  SOSApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref SafeHerAPI
+      ParentId: !GetAtt SafeHerAPI.RootResourceId
+      PathPart: sos
+
+
+  GPSApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref SafeHerAPI
+      ParentId: !GetAtt SafeHerAPI.RootResourceId
+      PathPart: location
+
+
+# API Methods
+
+  SOSMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref SafeHerAPI
+      ResourceId: !Ref SOSApiResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref SafeHerAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SafeHerSOSLambda.Arn}/invocations
+
+
+  GPSMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref SafeHerAPI
+      ResourceId: !Ref GPSApiResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref SafeHerAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SafeHerGPSLambda.Arn}/invocations
+
+
+# Lambda Permissions
+
+  AllowAPIGatewaySOS:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SafeHerSOSLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+
+
+  AllowAPIGatewayGPS:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SafeHerGPSLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+# API Gateway Deployment
+
+  SafeHerAPIDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - SOSMethod
+      - GPSMethod
+    Properties:
+      RestApiId: !Ref SafeHerAPI
+      StageName: prod
+
+
+# CloudWatch Monitoring
+
+  SOSLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/SafeHer-SOS-Processor
+      RetentionInDays: 30
+
+  GPSLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/SafeHer-GPS-Tracker
+      RetentionInDays: 30
+
+  EvidenceLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/SafeHer-Evidence-Upload
+      RetentionInDays: 30
+
+
+# AWS Amplify Frontend
+
+  SafeHerAmplifyApp:
+    Type: AWS::Amplify::App
+    Properties:
+      Name: SafeHer-Frontend
+      Description: SafeHer React Frontend Application
+      BuildSpec: |
+        version: 1
+        frontend:
+          phases:
+            preBuild:
+              commands:
+                - npm install
+            build:
+              commands:
+                - npm run build
+          artifacts:
+            baseDirectory: build
+            files:
+              - '**/*'
+          cache:
+            paths:
+              - node_modules/**/*
+
+
+  SafeHerAmplifyBranch:
+    Type: AWS::Amplify::Branch
+    Properties:
+      AppId: !GetAtt SafeHerAmplifyApp.AppId
+      BranchName: main
+      EnableAutoBuild: true
+
+
+# Outputs
 
 Outputs:
 
-  InstancePublicIP:
-    Description: Public IP of SafeHer Web Server
-    Value: !GetAtt SafeHerWebServer.PublicIp
+  CognitoUserPoolID:
+    Description: Cognito User Pool Identifier
+    Value: !Ref SafeHerUserPool
 
-  VPCID:
-    Description: VPC ID
-    Value: !Ref SafeHerVPC
+  CognitoClientID:
+    Description: Cognito Application Client ID
+    Value: !Ref SafeHerUserPoolClient
 
-  PublicSubnetID:
-    Description: Public Subnet ID
-    Value: !Ref SafeHerPublicSubnet
+  APIEndpoint:
+    Description: API Gateway Endpoint
+    Value: !Sub https://${SafeHerAPI}.execute-api.${AWS::Region}.amazonaws.com/prod
+
+  SOSDatabase:
+    Description: SOS DynamoDB Table
+    Value: !Ref SOSAlertsTable
+
+  GPSDatabase:
+    Description: GPS DynamoDB Table
+    Value: !Ref GPSTable
+
+  EvidenceStorage:
+    Description: S3 Evidence Bucket
+    Value: !Ref SafeHerEvidenceBucket
+
+  EmergencyNotificationTopic:
+    Description: SNS Emergency Topic
+    Value: !Ref SafeHerEmergencyTopic
+
+  AmplifyApplicationID:
+    Description: Amplify Frontend Application ID
+    Value: !GetAtt SafeHerAmplifyApp.AppId
